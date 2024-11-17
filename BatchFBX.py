@@ -5,7 +5,7 @@ bl_info = {
     "name": "BatchFBX",
     "author": "Ziggor",
     "version": (1, 0),
-    "blender": (3, 3, 6),
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar > BatchFBX",
     "description": "Batch export selected meshes as separate FBX files",
     "category": "Import-Export",
@@ -35,15 +35,11 @@ class BatchFBXPanel(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         preferences = bpy.context.preferences.addons[__name__].preferences
-
         layout.label(text="Export Path: " + preferences.path_location)
-
         row = layout.row()
         row.operator("batch_fbx.path", text="Path")
-
         row = layout.row()
         row.operator("batch_fbx.export", text="Export")
-
         row = layout.row()
         row.operator("batch_fbx.toggle_face_orientation", text="Toggle Face Orientation")
 
@@ -69,17 +65,13 @@ class BatchFBXExportOperator(bpy.types.Operator):
     def execute(self, context):
         preferences = bpy.context.preferences.addons[__name__].preferences
         export_path = bpy.path.abspath(preferences.path_location)
-
         selected_objects = bpy.context.selected_objects
-
         for obj in selected_objects:
             if obj.type == 'MESH':
                 bpy.ops.object.select_all(action='DESELECT')
                 obj.select_set(True)
-
                 filepath = os.path.join(export_path, obj.name + ".fbx")
                 bpy.ops.export_scene.fbx(filepath=filepath, use_selection=True)
-
         self.report({'INFO'}, "FBX export complete!")
         return {'FINISHED'}
 
