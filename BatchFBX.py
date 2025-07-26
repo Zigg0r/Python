@@ -1,103 +1,225 @@
-import bpy
-import os
-
 bl_info = {
     "name": "BatchFBX",
     "author": "Ziggor",
     "version": (1, 0),
-    "blender": (4, 2, 0),
+    "blender": (4, 5, 0),
     "location": "View3D > Sidebar > BatchFBX",
-    "description": "Batch export selected meshes as separate FBX files",
+    "description": "Export selected meshes as separate FBX files",
     "category": "Import-Export",
 }
 
-class BatchFBXPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
+import bpy
+import os
+from bpy.props import (
+    StringProperty, BoolProperty, EnumProperty,
+    FloatProperty, CollectionProperty
+)
+from bpy.types import Operator, Panel, PropertyGroup
 
-    path_location: bpy.props.StringProperty(
-        name="Path",
-        description="Folder location for FBX exports",
-        subtype='DIR_PATH',
+
+# ----------------------------
+# Property Storage
+# ----------------------------
+class BatchFBXProperties(PropertyGroup):
+    export_path: StringProperty(
+        name="Export Path",
+        description="Choose export directory",
+        subtype='DIR_PATH'
     )
 
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text="Select Export Path:")
-        layout.prop(self, "path_location")
+    export_mode: EnumProperty(
+        name="Export Mode",
+        description="Choose FBX export preset",
+        items=[
+            ('VRCHAT', "VRChat", "Export using VRChat preset"),
+            ('DEFAULT', "Default", "Export using Blender's default FBX settings")
+        ],
+        default='VRCHAT'
+    )
 
-class BatchFBXPanel(bpy.types.Panel):
-    bl_label = "BatchFBX"
-    bl_idname = "VIEW3D_PT_batch_fbx"
-    bl_space_type = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_category = "BatchFBX"
+    progress: FloatProperty(
+        name="Progress",
+        description="Current export progress",
+        default=0.0,
+        min=0.0,
+        max=1.0
+    )
 
-    def draw(self, context):
-        layout = self.layout
-        preferences = bpy.context.preferences.addons[__name__].preferences
-        layout.label(text="Export Path: " + preferences.path_location)
-        row = layout.row()
-        row.operator("batch_fbx.path", text="Path")
-        row = layout.row()
-        row.operator("batch_fbx.export", text="Export")
-        row = layout.row()
-        row.operator("batch_fbx.toggle_face_orientation", text="Toggle Face Orientation")
+    show_recent: BoolProperty(
+        name="Show Recent",
+        description="Show recently exported object names",
+        default=False
+    )
 
-class BatchFBXPathOperator(bpy.types.Operator):
-    bl_idname = "batch_fbx.path"
+    recent_names: CollectionProperty(type=bpy.types.PropertyGroup)
+
+
+# ----------------------------
+# Operators
+# ----------------------------
+class BATCHFBX_OT_SetPath(Operator):
+    bl_idname = "batchfbx.set_path"
     bl_label = "Set Export Path"
+    bl_description = "Choose export directory"
 
-    filepath: bpy.props.StringProperty(subtype='DIR_PATH')
-
-    def execute(self, context):
-        preferences = bpy.context.preferences.addons[__name__].preferences
-        preferences.path_location = self.filepath
-        return {'FINISHED'}
+    directory: StringProperty(subtype='DIR_PATH')
 
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
-class BatchFBXExportOperator(bpy.types.Operator):
-    bl_idname = "batch_fbx.export"
+    def execute(self, context):
+        context.scene.batchfbx_props.export_path = self.directory
+        return {'FINISHED'}
+
+
+class BATCHFBX_OT_ToggleMode(Operator):
+    bl_idname = "batchfbx.toggle_mode"
+    bl_label = "Toggle Export Mode"
+
+    mode: StringProperty()
+
+    def execute(self, context):
+        context.scene.batchfbx_props.export_mode = self.mode
+        return {'FINISHED'}
+
+
+class BATCHFBX_OT_Export(Operator):
+    bl_idname = "batchfbx.export"
     bl_label = "Export FBX"
+    bl_description = "Export selected meshes to individual FBX files"
 
     def execute(self, context):
-        preferences = bpy.context.preferences.addons[__name__].preferences
-        export_path = bpy.path.abspath(preferences.path_location)
-        selected_objects = bpy.context.selected_objects
-        for obj in selected_objects:
-            if obj.type == 'MESH':
-                bpy.ops.object.select_all(action='DESELECT')
-                obj.select_set(True)
-                filepath = os.path.join(export_path, obj.name + ".fbx")
-                bpy.ops.export_scene.fbx(filepath=filepath, use_selection=True)
-        self.report({'INFO'}, "FBX export complete!")
+        props = context.scene.batchfbx_props
+        path = props.export_path
+        selected = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        if not path or not selected:
+            self.report({'ERROR'}, "Set a path and select at least one mesh")
+            return {'CANCELLED'}
+
+        props.recent_names.clear()
+        props.show_recent = False
+
+        context.window.cursor_set("WAIT")
+        bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+
+        total = len(selected)
+        for i, obj in enumerate(selected):
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            context.view_layer.objects.active = obj
+
+            export_file = os.path.join(path, f"{obj.name}.fbx")
+
+            if props.export_mode == 'VRCHAT':
+                bpy.ops.export_scene.fbx(
+                    filepath=export_file,
+                    use_selection=True,
+                    use_active_collection=False,
+                    object_types={'MESH'},
+                    apply_unit_scale=True,
+                    add_leaf_bones=False,
+                    bake_anim=False,
+                    use_custom_props=False
+                )
+            else:
+                bpy.ops.export_scene.fbx(
+                    filepath=export_file,
+                    use_selection=True
+                )
+
+            item = props.recent_names.add()
+            item.name = obj.name
+
+            props.progress = (i + 1) / total
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+
+        context.window.cursor_set("DEFAULT")
+        self.report({'INFO'}, f"Exported {total} object(s)")
         return {'FINISHED'}
 
-class BatchFBXToggleFaceOrientationOperator(bpy.types.Operator):
-    bl_idname = "batch_fbx.toggle_face_orientation"
-    bl_label = "Toggle Face Orientation"
 
-    def execute(self, context):
-        bpy.context.space_data.overlay.show_face_orientation = not bpy.context.space_data.overlay.show_face_orientation
-        return {'FINISHED'}
+# ----------------------------
+# UI Panel
+# ----------------------------
+class BATCHFBX_PT_MainPanel(Panel):
+    bl_label = "BatchFBX"
+    bl_idname = "BATCHFBX_PT_main_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "BatchFBX"
 
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.batchfbx_props
+        selected = [obj for obj in context.selected_objects if obj.type == 'MESH']
+
+        # Path Button (left, no stretch) + Path Text (right, fills rest)
+        row = layout.row(align=True)
+        row.operator("batchfbx.set_path", text="Path", icon='FILE_FOLDER')
+        row.label(text=props.export_path if props.export_path else "")
+
+        # Export Mode Header
+        row = layout.row()
+        row.alignment = 'CENTER'
+        row.label(text="Export Mode", icon='SETTINGS')
+
+        # Toggle buttons
+        row = layout.row(align=True)
+        row.operator("batchfbx.toggle_mode", text="VRChat", icon='MESH_UVSPHERE', depress=props.export_mode == 'VRCHAT').mode = 'VRCHAT'
+        row.operator("batchfbx.toggle_mode", text="Default", icon='MESH_MONKEY', depress=props.export_mode == 'DEFAULT').mode = 'DEFAULT'
+
+        # Export Settings (read-only)
+        box = layout.box()
+        box.enabled = False
+        if props.export_mode == 'VRCHAT':
+            box.label(text="✔ Selected Objects")
+            box.label(text="✖ Camera, Lamp")
+            box.label(text="✔ Apply Scalings: FBX Units Scale")
+            box.label(text="✖ Add Leaf Bones")
+            box.label(text="✖ Bake Animation")
+        else:
+            box.label(text="✔ Default Blender Settings")
+
+        # Export Row: Count + Export Button
+        row = layout.row(align=True)
+        row.label(text=f"Selected: {len(selected)}", icon='MESH_CUBE')
+        row.operator("batchfbx.export", text="Export", icon='EXPORT')
+
+        # Progress
+        layout.prop(props, "progress", text="Progress", slider=True)
+
+        # Recent Exports Dropdown
+        box = layout.box()
+        row = box.row()
+        row.prop(props, "show_recent", icon="TRIA_DOWN" if props.show_recent else "TRIA_RIGHT", text="", emboss=False)
+        row.label(text="Recent Exports")
+
+        if props.show_recent:
+            for item in props.recent_names:
+                box.label(text=item.name, icon='OBJECT_DATAMODE')
+
+# ----------------------------
+# Register / Unregister
+# ----------------------------
 classes = (
-    BatchFBXPreferences,
-    BatchFBXPanel,
-    BatchFBXPathOperator,
-    BatchFBXExportOperator,
-    BatchFBXToggleFaceOrientationOperator,
+    BatchFBXProperties,
+    BATCHFBX_OT_SetPath,
+    BATCHFBX_OT_ToggleMode,
+    BATCHFBX_OT_Export,
+    BATCHFBX_PT_MainPanel,
 )
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.batchfbx_props = bpy.props.PointerProperty(type=BatchFBXProperties)
 
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.batchfbx_props
 
 if __name__ == "__main__":
     register()
